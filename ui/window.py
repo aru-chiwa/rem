@@ -361,8 +361,19 @@ def launch():
     app = QApplication(sys.argv)
     win = JarvisWindow()
 
+    # Garde une référence forte sur les workers actifs : sans ça, le
+    # ramasse-miettes Python peut détruire le QThread pendant qu'il tourne
+    # encore, ce qui fait planter l'appli (QThread: Destroyed while
+    # thread '' is still running / core dumped).
+    win._active_workers = []
+
     def on_user_message(text: str):
         worker = BrainWorker(text)
+        win._active_workers.append(worker)
+
+        def cleanup():
+            if worker in win._active_workers:
+                win._active_workers.remove(worker)
 
         def on_response(reponse: str):
             win.add_message("Jarvis", reponse)
@@ -376,6 +387,7 @@ def launch():
             threading.Thread(target=speak_then_idle, daemon=True).start()
 
         worker.response_ready.connect(on_response)
+        worker.finished.connect(cleanup)
         worker.start()
 
     win.sig_user_message.connect(on_user_message)
