@@ -135,7 +135,7 @@ class MascotWidget(QLabel):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.setMinimumSize(220, 220)
+        self.setMinimumSize(340, 340)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
         self._movies = {}
@@ -147,7 +147,7 @@ class MascotWidget(QLabel):
         for state, path in MASCOT_FILES.items():
             if path.exists():
                 movie = QMovie(str(path))
-                movie.setScaledSize(QSize(200, 200))
+                movie.setScaledSize(QSize(320, 320))
                 self._movies[state] = movie
 
     def set_state(self, state: str):
