@@ -1,7 +1,8 @@
 """
 JARVIS - Interface graphique PyQt6 (v2)
 Design minimaliste, chat agrandi et copiable, mascotte kawaii animée,
-thème clair / sombre avec bouton de switch.
+thème clair / sombre, indicateur de réflexion animé, bouton Quit avec
+message d'adieu, et synchronisation texte/voix.
 """
 
 import sys
@@ -18,10 +19,6 @@ from PyQt6.QtGui import QMovie, QFont
 
 
 # ─── Emplacement des assets de la mascotte ─────────────────────────────────
-# Dépose ici tes GIFs téléchargés (voir README) :
-#   assets/mascot/idle.gif
-#   assets/mascot/listening.gif
-#   assets/mascot/speaking.gif
 ASSETS_DIR = Path(__file__).resolve().parent.parent / "assets" / "mascot"
 
 MASCOT_FILES = {
@@ -30,15 +27,15 @@ MASCOT_FILES = {
     "speaking":  ASSETS_DIR / "speaking.gif",
 }
 
-# Emoji de secours si un GIF n'est pas encore présent
 FALLBACK_FACES = {
     "idle":      "( ◡ ‿ ◡ )",
     "listening": "( o ‿ o )",
     "speaking":  "( ^ ‿ ^ )",
 }
 
+GOODBYE_TEXT = "Goodbye, sir."
 
-# ─── Thèmes ─────────────────────────────────────────────────────────────────
+
 THEMES = {
     "dark": {
         "bg":        "#0c0f12",
@@ -117,6 +114,10 @@ def build_stylesheet(t: dict) -> str:
         background: {t['accent_bg']};
         border-color: {t['accent']};
     }}
+    QPushButton#quitBtn:hover {{
+        background: rgba(239,68,68,0.12);
+        border-color: #ef4444;
+    }}
     QSplitter::handle {{
         background: {t['border']};
         width: 1px;
@@ -124,14 +125,7 @@ def build_stylesheet(t: dict) -> str:
     """
 
 
-# ─── Mascotte ────────────────────────────────────────────────────────────────
 class MascotWidget(QLabel):
-    """
-    Affiche un GIF animé selon l'état ('idle' | 'listening' | 'speaking').
-    Si le fichier GIF n'existe pas encore, affiche un visage texte de secours
-    pour que l'interface reste utilisable pendant que tu récupères tes assets.
-    """
-
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -156,20 +150,17 @@ class MascotWidget(QLabel):
             self.setMovie(self._movies[state])
             self._movies[state].start()
         else:
-            # Fallback texte tant que le GIF n'est pas fourni
             self.setMovie(None)
             self.setText(FALLBACK_FACES.get(state, "( . . )"))
             self.setStyleSheet("font-size: 28px;")
 
     def apply_theme(self, theme_name: str):
-        # Les GIF restent identiques ; place utilisée si tu veux gérer
-        # des variantes claires/sombres plus tard (ex: idle_light.gif).
         pass
 
 
-# ─── Fenêtre principale ───────────────────────────────────────────────────────
 class JarvisWindow(QMainWindow):
     sig_user_message = pyqtSignal(str)
+    sig_close_now = pyqtSignal()
 
     def __init__(self):
         super().__init__()
@@ -179,6 +170,14 @@ class JarvisWindow(QMainWindow):
         self._theme_name = "dark"
         self._current_state = "idle"
         self.voice_enabled = True
+
+        self._messages = []
+        self._thinking = False
+        self._thinking_dots = 1
+
+        self._quitting = False
+        self._ready_to_close = False
+        self.sig_close_now.connect(self._do_close_now)
 
         central = QWidget()
         self.setCentralWidget(central)
@@ -198,10 +197,12 @@ class JarvisWindow(QMainWindow):
 
         root.addWidget(self._make_input_bar())
 
+        self._thinking_timer = QTimer(self)
+        self._thinking_timer.timeout.connect(self._tick_thinking)
+
         self._apply_theme()
         self._start_clock()
 
-    # ── Sections ─────────────────────────────────────────────────────────────
     def _make_top_bar(self):
         bar = QFrame()
         bar.setObjectName("topBar")
@@ -222,6 +223,11 @@ class JarvisWindow(QMainWindow):
         self._voice_btn.setFixedWidth(120)
         self._voice_btn.clicked.connect(self._toggle_voice)
 
+        self._quit_btn = QPushButton("⏻ Quit")
+        self._quit_btn.setObjectName("quitBtn")
+        self._quit_btn.setFixedWidth(90)
+        self._quit_btn.clicked.connect(self.close)
+
         lay.addWidget(title)
         lay.addStretch()
         lay.addWidget(self._clock)
@@ -229,6 +235,8 @@ class JarvisWindow(QMainWindow):
         lay.addWidget(self._voice_btn)
         lay.addSpacing(8)
         lay.addWidget(self._theme_btn)
+        lay.addSpacing(8)
+        lay.addWidget(self._quit_btn)
         return bar
 
     def _make_mascot_panel(self):
@@ -257,7 +265,6 @@ class JarvisWindow(QMainWindow):
         self._chat = QTextBrowser()
         self._chat.setObjectName("chat")
         self._chat.setOpenExternalLinks(False)
-        # Sélectionnable + copiable par défaut (comportement natif de QTextBrowser)
         lay.addWidget(self._chat)
         return panel
 
@@ -282,12 +289,12 @@ class JarvisWindow(QMainWindow):
         lay.addWidget(send_btn)
         return bar
 
-    # ── Thème ────────────────────────────────────────────────────────────────
     def _apply_theme(self):
         t = THEMES[self._theme_name]
         self.setStyleSheet(build_stylesheet(t))
         self.mascot.apply_theme(self._theme_name)
-        self._render_chat_theme()
+        self._render_chat_stylesheet()
+        self._render_chat()
 
     def _toggle_theme(self):
         self._theme_name = "light" if self._theme_name == "dark" else "dark"
@@ -297,51 +304,82 @@ class JarvisWindow(QMainWindow):
         self.voice_enabled = not self.voice_enabled
         self._voice_btn.setText("🔊 Voice: ON" if self.voice_enabled else "🔇 Voice: OFF")
 
-    def _render_chat_theme(self):
-        # Redessine l'historique existant avec les couleurs du thème actuel
+    def _render_chat_stylesheet(self):
         t = THEMES[self._theme_name]
         self._chat.document().setDefaultStyleSheet(f"""
             .jarvis {{ color: {t['accent']}; font-weight: 600; }}
             .you {{ color: {t['text_dim']}; font-weight: 600; }}
             .msg {{ color: {t['text']}; }}
+            .thinking {{ color: {t['text_dim']}; font-style: italic; }}
         """)
 
-    # ── Horloge ──────────────────────────────────────────────────────────────
     def _start_clock(self):
         t = QTimer(self)
         t.timeout.connect(lambda: self._clock.setText(datetime.now().strftime("%H:%M:%S")))
         t.start(1000)
         self._clock.setText(datetime.now().strftime("%H:%M:%S"))
 
-    # ── Actions ───────────────────────────────────────────────────────────────
     def _on_send(self):
         text = self._input.text().strip()
         if not text:
             return
         self._input.clear()
         self.add_message("You", text)
+        self.start_thinking()
         self.set_state("listening")
         self.sig_user_message.emit(text)
 
-    # ── API publique (compatible avec main.py / brain.py / voice.py) ──────────
     def add_message(self, sender: str, text: str):
-        """Ajoute un message dans le chat (sélectionnable et copiable)."""
-        css_class = "jarvis" if sender.upper() == "JARVIS" else "you"
-        safe_text = (
+        self._thinking = False
+        self._thinking_timer.stop()
+        self._messages.append((sender, text))
+        self._render_chat()
+
+    def start_thinking(self):
+        self._thinking = True
+        self._thinking_dots = 1
+        self._thinking_timer.start(450)
+        self._render_chat()
+
+    def stop_thinking(self):
+        self._thinking = False
+        self._thinking_timer.stop()
+        self._render_chat()
+
+    def _tick_thinking(self):
+        self._thinking_dots = (self._thinking_dots % 3) + 1
+        self._render_chat()
+
+    def _escape(self, text: str) -> str:
+        return (
             text.replace("&", "&amp;")
                 .replace("<", "&lt;")
                 .replace(">", "&gt;")
                 .replace("\n", "<br>")
         )
-        html = f'<p><span class="{css_class}">{sender.upper()}</span><br>' \
-               f'<span class="msg">{safe_text}</span></p>'
-        self._chat.append(html)
+
+    def _render_chat(self):
+        blocks = []
+        for sender, text in self._messages:
+            css_class = "jarvis" if sender.upper() == "JARVIS" else "you"
+            blocks.append(
+                f'<p><span class="{css_class}">{sender.upper()}</span><br>'
+                f'<span class="msg">{self._escape(text)}</span></p>'
+            )
+
+        if self._thinking:
+            dots = "." * self._thinking_dots
+            blocks.append(
+                '<p><span class="jarvis">REM</span><br>'
+                f'<span class="thinking">réfléchit{dots}</span></p>'
+            )
+
+        self._chat.setHtml("".join(blocks))
         self._chat.verticalScrollBar().setValue(
             self._chat.verticalScrollBar().maximum()
         )
 
     def set_state(self, state: str):
-        """state = 'idle' | 'listening' | 'speaking'"""
         self._current_state = state
         self.mascot.set_state(state)
         labels = {
@@ -351,10 +389,51 @@ class JarvisWindow(QMainWindow):
         }
         self._state_lbl.setText(labels.get(state, "STANDBY"))
 
+    def closeEvent(self, event):
+        if self._ready_to_close:
+            event.accept()
+            return
+        event.ignore()
+        if not self._quitting:
+            self._start_quit_sequence()
 
-# ─── Worker thread pour brain.py ──────────────────────────────────────────────
+    def _start_quit_sequence(self):
+        self._quitting = True
+        self._input.setEnabled(False)
+        self._quit_btn.setEnabled(False)
+        self.stop_thinking()
+        self.set_state("speaking" if self.voice_enabled else "idle")
+
+        if self.voice_enabled:
+            synth_worker = VoiceSynthWorker(GOODBYE_TEXT)
+            self._active_workers = getattr(self, "_active_workers", [])
+            self._active_workers.append(synth_worker)
+
+            def on_synth_done(ok: bool):
+                if synth_worker in self._active_workers:
+                    self._active_workers.remove(synth_worker)
+                self.add_message("Jarvis", GOODBYE_TEXT)
+
+                import threading
+                from core.voice import play
+                def do_play():
+                    if ok:
+                        play()
+                    self.sig_close_now.emit()
+                threading.Thread(target=do_play, daemon=True).start()
+
+            synth_worker.done.connect(on_synth_done)
+            synth_worker.start()
+        else:
+            self.add_message("Jarvis", GOODBYE_TEXT)
+            QTimer.singleShot(700, self.sig_close_now.emit)
+
+    def _do_close_now(self):
+        self._ready_to_close = True
+        self.close()
+
+
 class BrainWorker(QThread):
-    """Exécute demander() dans un thread séparé pour ne pas bloquer l'UI."""
     response_ready = pyqtSignal(str)
 
     def __init__(self, message: str):
@@ -367,15 +446,24 @@ class BrainWorker(QThread):
         self.response_ready.emit(reponse)
 
 
-# ─── Lancement ────────────────────────────────────────────────────────────────
+class VoiceSynthWorker(QThread):
+    """Génère l'audio (Piper) sans le jouer, pour synchroniser texte et voix."""
+    done = pyqtSignal(bool)
+
+    def __init__(self, text: str):
+        super().__init__()
+        self.text = text
+
+    def run(self):
+        from core.voice import synthesize
+        ok = synthesize(self.text)
+        self.done.emit(ok)
+
+
 def launch():
     app = QApplication(sys.argv)
     win = JarvisWindow()
 
-    # Garde une référence forte sur les workers actifs : sans ça, le
-    # ramasse-miettes Python peut détruire le QThread pendant qu'il tourne
-    # encore, ce qui fait planter l'appli (QThread: Destroyed while
-    # thread '' is still running / core dumped).
     win._active_workers = []
 
     def on_user_message(text: str):
@@ -387,18 +475,30 @@ def launch():
                 win._active_workers.remove(worker)
 
         def on_response(reponse: str):
-            win.add_message("Jarvis", reponse)
+            win.stop_thinking()
 
             if win.voice_enabled:
-                win.set_state("speaking")
+                synth_worker = VoiceSynthWorker(reponse)
+                win._active_workers.append(synth_worker)
 
-                from core.voice import parler
-                import threading
-                def speak_then_idle():
-                    parler(reponse)
-                    win.set_state("idle")
-                threading.Thread(target=speak_then_idle, daemon=True).start()
+                def on_synth_done(ok: bool):
+                    if synth_worker in win._active_workers:
+                        win._active_workers.remove(synth_worker)
+                    win.add_message("Jarvis", reponse)
+                    win.set_state("speaking")
+
+                    import threading
+                    from core.voice import play
+                    def do_play():
+                        if ok:
+                            play()
+                        win.set_state("idle")
+                    threading.Thread(target=do_play, daemon=True).start()
+
+                synth_worker.done.connect(on_synth_done)
+                synth_worker.start()
             else:
+                win.add_message("Jarvis", reponse)
                 win.set_state("idle")
 
         worker.response_ready.connect(on_response)
@@ -408,12 +508,29 @@ def launch():
     win.sig_user_message.connect(on_user_message)
 
     welcome = "Welcome sir. Systems online. How can I assist you today?"
-    win.add_message("Jarvis", welcome)
 
     if win.voice_enabled:
-        import threading
-        from core.voice import parler
-        threading.Thread(target=parler, args=(welcome,), daemon=True).start()
+        welcome_worker = VoiceSynthWorker(welcome)
+        win._active_workers.append(welcome_worker)
+
+        def on_welcome_synth(ok: bool):
+            if welcome_worker in win._active_workers:
+                win._active_workers.remove(welcome_worker)
+            win.add_message("Jarvis", welcome)
+
+            import threading
+            from core.voice import play
+            def do_play():
+                if ok:
+                    play()
+                win.set_state("idle")
+            win.set_state("speaking")
+            threading.Thread(target=do_play, daemon=True).start()
+
+        welcome_worker.done.connect(on_welcome_synth)
+        welcome_worker.start()
+    else:
+        win.add_message("Jarvis", welcome)
 
     win.show()
     sys.exit(app.exec())
