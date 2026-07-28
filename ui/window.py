@@ -178,6 +178,7 @@ class JarvisWindow(QMainWindow):
 
         self._theme_name = "dark"
         self._current_state = "idle"
+        self.voice_enabled = True
 
         central = QWidget()
         self.setCentralWidget(central)
@@ -217,10 +218,16 @@ class JarvisWindow(QMainWindow):
         self._theme_btn.setFixedWidth(70)
         self._theme_btn.clicked.connect(self._toggle_theme)
 
+        self._voice_btn = QPushButton("🔊 Voice: ON")
+        self._voice_btn.setFixedWidth(120)
+        self._voice_btn.clicked.connect(self._toggle_voice)
+
         lay.addWidget(title)
         lay.addStretch()
         lay.addWidget(self._clock)
         lay.addSpacing(16)
+        lay.addWidget(self._voice_btn)
+        lay.addSpacing(8)
         lay.addWidget(self._theme_btn)
         return bar
 
@@ -285,6 +292,10 @@ class JarvisWindow(QMainWindow):
     def _toggle_theme(self):
         self._theme_name = "light" if self._theme_name == "dark" else "dark"
         self._apply_theme()
+
+    def _toggle_voice(self):
+        self.voice_enabled = not self.voice_enabled
+        self._voice_btn.setText("🔊 Voice: ON" if self.voice_enabled else "🔇 Voice: OFF")
 
     def _render_chat_theme(self):
         # Redessine l'historique existant avec les couleurs du thème actuel
@@ -377,14 +388,18 @@ def launch():
 
         def on_response(reponse: str):
             win.add_message("Jarvis", reponse)
-            win.set_state("speaking")
 
-            from core.voice import parler
-            import threading
-            def speak_then_idle():
-                parler(reponse)
+            if win.voice_enabled:
+                win.set_state("speaking")
+
+                from core.voice import parler
+                import threading
+                def speak_then_idle():
+                    parler(reponse)
+                    win.set_state("idle")
+                threading.Thread(target=speak_then_idle, daemon=True).start()
+            else:
                 win.set_state("idle")
-            threading.Thread(target=speak_then_idle, daemon=True).start()
 
         worker.response_ready.connect(on_response)
         worker.finished.connect(cleanup)
@@ -395,9 +410,10 @@ def launch():
     welcome = "Welcome sir. Systems online. How can I assist you today?"
     win.add_message("Jarvis", welcome)
 
-    import threading
-    from core.voice import parler
-    threading.Thread(target=parler, args=(welcome,), daemon=True).start()
+    if win.voice_enabled:
+        import threading
+        from core.voice import parler
+        threading.Thread(target=parler, args=(welcome,), daemon=True).start()
 
     win.show()
     sys.exit(app.exec())
